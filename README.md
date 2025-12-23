@@ -1,6 +1,6 @@
 # Remote Access Trojan (RAT)
 
-A simple RAT implementation in Rust with C2 server and client, featuring encrypted communication and basic anti-AV techniques.
+An advanced RAT implementation in Rust with C2 server and client, featuring encrypted communication and advanced anti-AV techniques.
 
 ## Features
 
@@ -16,9 +16,12 @@ A simple RAT implementation in Rust with C2 server and client, featuring encrypt
   - Keylogging
   - Client disconnection
 - **Anti-AV Techniques**:
+  - String encryption using XOR to hide hardcoded strings
+  - Anti-debugging checks to detect and evade debuggers
+  - Anti-VM checks to detect virtual machine environments
   - Control flow flattening to obfuscate code execution
-  - Placeholder for string encryption (XOR-based)
   - Direct syscall support (Windows API integration)
+  - Runtime string decryption to avoid static analysis
 
 ## Building
 

