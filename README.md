@@ -1,6 +1,6 @@
 # Remote Access Trojan (RAT)
 
-An advanced RAT implementation in Rust with C2 server and client, featuring encrypted communication and advanced anti-AV techniques.
+An RAT implementation in Rust with C2 server and client, featuring encrypted communication and anti-AV techniques.
 
 ## Features
 
@@ -32,21 +32,28 @@ cargo build --bin server
 cargo build --bin client
 ```
 
-## Running
+## Configuration
 
-### Server
-Run the C2 server:
-```bash
-./target/debug/server
-```
-The server listens on `0.0.0.0:7878` and provides an interactive shell for managing connected clients.
+The RAT uses a `config.toml` file for configuration. Create this file in the same directory as the binaries.
 
-### Client
-Run the client:
-```bash
-./target/debug/client
+Example `config.toml`:
+
+```toml
+[client]
+host = "127.0.0.1"
+port = 7878
+
+[server]
+port = 7878
+
+[security]
+encryption_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 ```
-The client attempts to connect to `127.0.0.1:7878` and waits for commands from the server.
+
+- `client.host`: The C2 server IP address for the client to connect to.
+- `client.port`: The C2 server port for the client.
+- `server.port`: The port for the server to listen on.
+- `security.encryption_key`: The AES-GCM encryption key in hex format (64 characters).
 
 ## Usage
 

